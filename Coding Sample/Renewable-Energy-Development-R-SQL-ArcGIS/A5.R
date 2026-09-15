@@ -1,0 +1,59 @@
+require(sf)
+require(RSQLite)
+require(DBI)
+require(tidyverse)
+require(lubridate)
+
+# Create path to file system database
+db<- "./SQL_Example/SmallMammalDB.gpkg"
+
+# ODBC connection to DB
+dbConn<-dbConnect(SQLite(), db)
+
+# Get list of tables
+dbListTables(dbConn)
+
+# Question 1
+q1<-dbReadTable(dbConn,"tbl_observations") %>% 
+  distinct(Plot, PlotArray, SampDate, SpecCode, Replicate) %>% 
+  mutate(SampDate = as.Date(SampDate, format = "%Y-%m-%d")) %>% 
+  mutate(SampYear = year(SampDate), SampMonth = month(SampDate)) %>% 
+  mutate(Season = case_when(SampMonth %in% c(4:9) ~ "Summer", TRUE ~ "Winter")) %>% 
+  group_by(SpecCode, SampYear, Season) %>% 
+  summarise(Count = n()) %>% 
+  pivot_wider(id_cols = c(SpecCode, SampYear), names_from = Season, values_from = Count, values_fill = 0) %>% 
+  rename(Species = SpecCode, Year = SampYear)
+
+# Question 2
+q2 <- dbReadTable(dbConn, "tbl_weather") %>% 
+  mutate(SampDate = as.Date(SampDate, format = "%Y-%m-%d")) %>% 
+  mutate(SampYear = year(SampDate), SampMonth = month(SampDate)) %>% 
+  group_by(SampYear, SampMonth) %>% 
+  summarise(Average = round(mean(Temp_H_F), 1), SD = round(replace_na(sd(Temp_H_F, na.rm = TRUE), 0), 1), Count = n()) %>%
+  rename(Year = SampYear, Month = SampMonth, `Standard Deviation` = SD)
+
+# Question 3
+q3 <- dbReadTable(dbConn,"tbl_observations") %>% 
+  filter(Param %in% c("Sex", "Wt_g")) %>% 
+  pivot_wider(id_cols = Plot:Replicate, names_from = Param, values_from = Value) %>% 
+  filter(!is.na(Wt_g)) %>% 
+  mutate(Wt_g = as.numeric(Wt_g)) %>% 
+  group_by(SpecCode, Sex) %>% 
+  summarize(Average = round(mean(Wt_g), 1), SD = round(replace_na(sd(Wt_g, na.rm = TRUE), 0), 1), Count = n()) %>%
+  rename(Species = SpecCode, `Standard Deviation` = SD)
+
+# Question 4
+q4 <- dbReadTable(dbConn, "tbl_observations") %>% 
+  filter(SpecCode %in% c("SOLO") & Param %in% c("Sex")) %>% 
+  pivot_wider(id_cols = Plot:Replicate, names_from = Param, values_from = Value) %>% 
+  mutate(SampDate = as.Date(SampDate, format = "%Y-%m-%d")) %>% 
+  mutate(SampYear = year(SampDate)) %>% 
+  group_by(SpecCode, Plot, SampYear, Sex) %>% 
+  summarise(SOLO_Count = n()) %>% 
+  left_join(dbReadTable(dbConn, "fc_plots") %>% 
+              select(Plot, Block, TRTMT, BasalArea_m2_ha), by = "Plot") %>%
+  rename(Treatment = TRTMT, BasalArea_m2 = BasalArea_m2_ha, Species = SpecCode, Year = SampYear)
+
+# Anova
+mod<-aov(SOLO_Count ~ Sex + Block + Treatment + Year + BasalArea_m2, data = q4)
+summary(mod)
